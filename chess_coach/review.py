@@ -39,6 +39,9 @@ class ReviewedMove:
     best_san: str | None
     best_line: list[str]
     explanation: str = ""  # only for mistakes/blunders
+    # Extra context Phase 3 needs to turn a blunder into a puzzle:
+    fen_before: str = ""  # the position with the player to move
+    refutation_move: chess.Move | None = None  # opponent's best reply to the mistake
 
     @property
     def mover(self) -> str:
@@ -97,6 +100,8 @@ def review_moves(
                 best_san=before.best_san,
                 best_line=before.pv_san,
                 explanation=explanation,
+                fen_before=before_board.fen(),
+                refutation_move=after.best_move,
             )
         )
     return reviewed

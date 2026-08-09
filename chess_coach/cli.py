@@ -6,10 +6,12 @@ Commands:
   chess-coach eval   [--fen FEN]   just print the human evaluation breakdown
   chess-coach play   [--elo N]     play a game vs a weakened Stockfish, then review
   chess-coach review GAME.pgn      review a saved PGN and annotate it
+  chess-coach puzzles add/train/stats   drill puzzles from your own blunders
+  chess-coach blindfold [--fen FEN]     visualise: what is under attack?
   chess-coach version              show the version
 
-`drill` (Phase 1) and `play`/`review` (Phase 2) are the real product; `scan`
-and `eval` are quick non-interactive lookups.
+`drill` (Phase 1), `play`/`review` (Phase 2), and `puzzles`/`blindfold`
+(Phase 3) are the real product; `scan` and `eval` are quick lookups.
 """
 
 from __future__ import annotations
@@ -20,11 +22,14 @@ import chess
 import chess.pgn
 
 from . import __version__
+from . import blindfold as blindfold_mod
+from . import puzzles as puzzles_mod
+from . import review as review_mod
+from .deck import Deck, default_deck_path
 from .drill import run_drill
 from .engine import Engine
 from .evaluation import evaluate_position
 from .forcing import scan_forcing_moves, scan_opponent_forcing_moves
-from . import review as review_mod
 from .play import play_game
 from .render import render_board, turn_line
 from .session import Session
@@ -307,6 +312,168 @@ def _default_pgn_path() -> str:
 
     stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
     return f"chess-coach-{stamp}.pgn"
+
+
+# ---------------------------------------------------------------------------
+# Phase 3: puzzles from your own blunders
+# ---------------------------------------------------------------------------
+
+puzzles_app = typer.Typer(
+    help="Drill puzzles auto-generated from your own blunders (spaced repetition)."
+)
+app.add_typer(puzzles_app, name="puzzles")
+
+
+@puzzles_app.command("add")
+def puzzles_add(
+    pgn: str = typer.Argument(..., help="A .pgn game to mine for blunders."),
+    deck_path: str = typer.Option(None, "--deck", help="Deck file (JSON)."),
+    depth: int = typer.Option(15, "--depth", "-d", help="Analysis depth."),
+    engine_path: str = typer.Option(None, "--engine-path", help="Stockfish path."),
+):
+    """Review a PGN and add a puzzle for every mistake and blunder."""
+    deck_path = deck_path or default_deck_path()
+    try:
+        with open(pgn, encoding="utf-8") as fh:
+            game = chess.pgn.read_game(fh)
+    except OSError as exc:
+        typer.secho(f"Couldn't open {pgn}: {exc}", fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+    if game is None or not list(game.mainline_moves()):
+        typer.secho("No moves to review in that file.", fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+
+    try:
+        engine = Engine(path=engine_path, depth=depth)
+    except Engine.Unavailable as exc:
+        typer.secho(str(exc), fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+    try:
+        start_board = game.board()
+        moves = list(game.mainline_moves())
+        reviewed = review_mod.review_moves(start_board, moves, engine)
+    finally:
+        engine.close()
+
+    label = game.headers.get("Date", "game")
+    new_puzzles = puzzles_mod.generate_from_review(reviewed, source=f"game {label}")
+
+    deck = Deck.load(deck_path)
+    added = deck.add_many(new_puzzles)
+    deck.save(deck_path)
+
+    typer.secho(
+        f"Found {len(new_puzzles)} mistake(s); added {added} new puzzle(s) to {deck_path}.",
+        fg=typer.colors.GREEN,
+    )
+    for p in new_puzzles:
+        tags = ", ".join(p.motifs) if p.motifs else "untagged"
+        typer.echo(f"  {p.source}: play {p.solution_san}  [{tags}]")
+
+
+@puzzles_app.command("train")
+def puzzles_train(
+    deck_path: str = typer.Option(None, "--deck", help="Deck file (JSON)."),
+    limit: int = typer.Option(10, "--max", "-n", help="Most puzzles to train."),
+    blindfold: bool = typer.Option(
+        False, "--blindfold", help="Show each position briefly, then hide it."
+    ),
+    seconds: float = typer.Option(10.0, "--seconds", help="Blindfold reveal time."),
+    depth: int = typer.Option(12, "--depth", "-d", help="Depth for lenient grading."),
+    engine_path: str = typer.Option(None, "--engine-path", help="Stockfish path."),
+    no_engine: bool = typer.Option(
+        False, "--no-engine", help="Grade by exact best move only (no engine)."
+    ),
+):
+    """Train the puzzles that are due today, updating their schedules."""
+    deck_path = deck_path or default_deck_path()
+    deck = Deck.load(deck_path)
+    due = deck.due()
+    if not due:
+        typer.secho("Nothing due right now. Add games with `puzzles add`.", fg=typer.colors.YELLOW)
+        return
+
+    engine = _open_engine(depth, no_engine, engine_path)
+    solved = 0
+    attempted = 0
+    try:
+        for puzzle in due[:limit]:
+            board = puzzle.board
+            attempted += 1
+            typer.echo("")
+            typer.echo("=" * 60)
+            if blindfold:
+                blindfold_mod.run_blindfold(
+                    board, ask=lambda p: typer.prompt(p.rstrip(), prompt_suffix=""),
+                    say=typer.echo, reveal_seconds=seconds,
+                )
+            else:
+                typer.echo(render_board(board))
+                typer.echo(turn_line(board))
+            typer.echo(f"({puzzle.color.capitalize()} to move — find the best move.)")
+
+            answer = typer.prompt("Your move")
+            move = puzzles_mod.parse_move(board, answer)
+            if move is None:
+                typer.secho("Not a legal move — marking incorrect.", fg=typer.colors.YELLOW)
+                correct = False
+            else:
+                correct = puzzles_mod.is_correct(puzzle, move, engine=engine)
+
+            if correct:
+                solved += 1
+                typer.secho(f"✓ Correct. {puzzle.solution_san} was the move.", fg=typer.colors.GREEN)
+            else:
+                typer.secho(f"✗ The move was {puzzle.solution_san}.", fg=typer.colors.RED)
+            if puzzle.motifs:
+                typer.echo("Motif(s): " + ", ".join(puzzle.motifs))
+            deck.record_attempt(puzzle, correct)
+    finally:
+        if engine is not None:
+            engine.close()
+
+    deck.save(deck_path)
+    typer.echo("")
+    typer.secho(f"Session: {solved}/{attempted} correct. Deck saved.", bold=True)
+
+
+@puzzles_app.command("stats")
+def puzzles_stats(
+    deck_path: str = typer.Option(None, "--deck", help="Deck file (JSON)."),
+):
+    """Show deck size, what's due, and your accuracy per motif."""
+    deck_path = deck_path or default_deck_path()
+    deck = Deck.load(deck_path)
+    for line in deck.stats_lines():
+        typer.echo(line)
+
+
+@app.command()
+def blindfold(
+    fen: str = typer.Option(None, "--fen", "-f", help="Position to study (FEN)."),
+    seconds: float = typer.Option(10.0, "--seconds", help="Reveal time before hiding."),
+    deck_path: str = typer.Option(None, "--deck", help="Deck to pull a position from."),
+):
+    """Study a position, then say from memory which of your pieces are attacked."""
+    if fen:
+        board = _make_board(fen)
+    else:
+        deck = Deck.load(deck_path or default_deck_path())
+        due = deck.due()
+        if not due:
+            typer.secho(
+                "Give a --fen, or add puzzles first so there's a position to use.",
+                fg=typer.colors.YELLOW,
+            )
+            raise typer.Exit(code=1)
+        board = due[0].board
+
+    blindfold_mod.run_blindfold(
+        board,
+        ask=lambda p: typer.prompt(p.rstrip(), prompt_suffix=""),
+        say=typer.echo,
+        reveal_seconds=seconds,
+    )
 
 
 @app.command()
