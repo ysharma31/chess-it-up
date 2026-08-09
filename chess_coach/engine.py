@@ -31,6 +31,26 @@ _CANDIDATE_PATHS = [
 # guess?) we need a number, and +/-100 pawns is effectively winning/losing.
 MATE_PAWNS = 100.0
 
+# Stockfish's UCI_Elo option refuses to go below this. To play a genuine
+# beginner (the brief wants ~800-1000) we have to weaken it with Skill Level
+# instead, which does reach far lower.
+UCI_ELO_MIN = 1320
+
+
+def elo_to_skill(elo: int) -> int:
+    """Rough map of a target Elo below Stockfish's UCI_Elo floor to Skill Level.
+
+    Skill Level runs 0-20; 0 is the weakest Stockfish will play. The mapping is
+    approximate on purpose — the point is "plays like a beginner", not a
+    calibrated rating. Anything at or below ~800 gets Skill 0; it rises gently
+    from there up to the 1320 hand-off point.
+    """
+    if elo <= 800:
+        return 0
+    # Spread 800..1320 across Skill Levels 0..8 (still clearly beatable).
+    skill = round((elo - 800) / 65)
+    return max(0, min(8, skill))
+
 
 def find_stockfish() -> str | None:
     """Locate a Stockfish binary, or return None if there isn't one."""
@@ -98,10 +118,44 @@ class Engine:
             )
         self.depth = depth
         self._engine = chess.engine.SimpleEngine.popen_uci(self.path)
+        self.strength_desc = "full strength"
         if skill is not None:
-            # Skill Level (0-20) is how Phase 2 will weaken the engine to play
-            # a beginner. Not used by Phase 1's analysis, but wired up here.
-            self._engine.configure({"Skill Level": max(0, min(20, skill))})
+            self.configure_strength(skill=skill)
+
+    # -- strength (Phase 2: play a weakened opponent) ----------------------
+    def configure_strength(self, elo: int | None = None, skill: int | None = None) -> None:
+        """Weaken (or restore) the engine's playing strength.
+
+        Pass `skill` (0-20) directly, or a target `elo`. Elos at/above 1320 use
+        Stockfish's own UCI_Elo limiter; below that we fall back to Skill Level
+        (see elo_to_skill), because UCI_Elo won't go lower. Call with neither
+        argument to restore full strength.
+        """
+        if skill is not None:
+            skill = max(0, min(20, skill))
+            self._engine.configure({"UCI_LimitStrength": False, "Skill Level": skill})
+            self.strength_desc = f"Skill Level {skill}"
+        elif elo is not None:
+            if elo >= UCI_ELO_MIN:
+                elo = min(elo, 3190)
+                self._engine.configure({"UCI_LimitStrength": True, "UCI_Elo": elo})
+                self.strength_desc = f"~{elo} Elo"
+            else:
+                sk = elo_to_skill(elo)
+                self._engine.configure({"UCI_LimitStrength": False, "Skill Level": sk})
+                self.strength_desc = f"~{elo} Elo (Skill Level {sk})"
+        else:
+            self._engine.configure({"UCI_LimitStrength": False, "Skill Level": 20})
+            self.strength_desc = "full strength"
+
+    def play_move(self, board: chess.Board, movetime: float = 0.1) -> chess.Move | None:
+        """Let the (possibly weakened) engine choose a move to play.
+
+        Uses a short thinking time rather than a fixed depth so weak settings
+        stay snappy. Returns None only if there is no legal move.
+        """
+        result = self._engine.play(board, chess.engine.Limit(time=movetime))
+        return result.move
 
     # -- context manager ---------------------------------------------------
     def __enter__(self) -> "Engine":
