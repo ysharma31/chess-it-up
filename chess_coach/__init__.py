@@ -14,6 +14,13 @@ Phase 1 lives in these modules:
 - grading:    compare what you said to what was true.
 - session:    track your recurring mistakes across a sitting.
 - drill:      the interactive five-step loop that ties it all together.
+
+Phase 2 adds play-and-review:
+
+- play:       a game loop against a deliberately weakened Stockfish.
+- classify:   grade a move by its centipawn loss (best..blunder).
+- tactics:    explain a mistake in plain words (hanging piece, fork, pin, mate).
+- review:     grade a whole game and export an annotated PGN.
 """
 
 __version__ = "0.1.0"

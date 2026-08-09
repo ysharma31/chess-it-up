@@ -23,7 +23,9 @@ until it becomes automatic.
 5. **Evaluate the resulting positions.** Decompose it — material, king safety,
    activity, pawn structure, space — don't eyeball it.
 
-## What's built so far — Phase 1
+## What's built so far
+
+### Phase 1 — the five-step drill
 
 The interactive five-step drill, on the command line, taking a FEN as input.
 
@@ -34,6 +36,19 @@ Stockfish. Grading your reasoning is the entire product.
 
 Per session it tracks: how many forcing moves you missed, how often your
 candidate list contained the best move, and how far off your evaluations were.
+
+### Phase 2 — play and review
+
+Play a full game against a **deliberately weakened** Stockfish (default ~900
+Elo — beatable on purpose), then have the coach walk back through it and grade
+every move: **best / good / inaccuracy / mistake / blunder**, by how many
+centipawns it cost you. For every mistake and blunder it explains the tactic in
+plain words — what you left hanging, the fork or pin you walked into, your
+opponent's punishing reply, and the move you should have played. It writes the
+whole thing out as an **annotated PGN** you can keep or open in any chess app.
+
+You can also review any **saved PGN** the same way, whether Chess Coach produced
+it or not.
 
 ## Install
 
@@ -67,7 +82,19 @@ python -m chess_coach drill
 # Quick non-interactive lookups (handy for checking a position):
 python -m chess_coach scan --fen "<FEN>"   # just the CCT forcing-move scan
 python -m chess_coach eval --fen "<FEN>"   # just the evaluation breakdown
+
+# Phase 2 — play a game vs a weakened engine, then auto-review it:
+python -m chess_coach play --elo 900              # play White; --color black to switch
+python -m chess_coach play --elo 1200 --no-review # skip the post-game review
+
+# Review any saved PGN and write an annotated copy:
+python -m chess_coach review game.pgn -o annotated.pgn
 ```
+
+During a game, type moves in algebraic notation (`Nf3` or `g1f3`); `takeback`
+undoes your last move, `resign` ends the game. Strength below ~1320 is set via
+Stockfish's Skill Level (its `UCI_Elo` won't go lower); at or above 1320 the
+real Elo limiter is used.
 
 Inside a drill, after each position you can type a move (e.g. `e4`) to play it
 and drill the next position, paste a new FEN, or `q` to finish and see your
@@ -86,7 +113,11 @@ Useful flags: `--depth N` (Stockfish search depth, default 15), `--no-engine`
 | `grading.py` | Compares what you said to what was true (lenient move matching, eval error). |
 | `session.py` | Tracks your recurring mistakes across a sitting. |
 | `drill.py` | The interactive five-step loop that ties it together. |
-| `cli.py` | The `chess-coach` command line (`drill`, `scan`, `eval`). |
+| `play.py` | Phase 2: the human-vs-weakened-Stockfish game loop. |
+| `classify.py` | Phase 2: centipawn loss → best/good/inaccuracy/mistake/blunder. |
+| `tactics.py` | Phase 2: plain-language explanations (hanging pieces, forks, pins, mate). |
+| `review.py` | Phase 2: grades a whole game and writes the annotated PGN. |
+| `cli.py` | The `chess-coach` command line (`drill`, `play`, `review`, `scan`, `eval`). |
 
 ## A note on the "threat" and trade math
 
@@ -115,7 +146,8 @@ The engine tests skip automatically if Stockfish isn't installed.
 
 ## Roadmap
 
-- **Phase 2** — play full games against a weakened Stockfish, then review with
+- **Phase 1** ✅ — the interactive five-step drill.
+- **Phase 2** ✅ — play full games against a weakened Stockfish, then review with
   per-move classification (best / good / inaccuracy / mistake / blunder) and
   plain-language explanations of every blunder. Export annotated PGN.
 - **Phase 3** — auto-generate puzzles from your own blunders, with spaced
